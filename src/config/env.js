@@ -14,7 +14,7 @@ const config = {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     ssl: {
-      require: true,
+      require: false,
       rejectUnauthorized: false,
     },
     max: 20,

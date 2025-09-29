@@ -1,622 +1,296 @@
-const { Pool } = require("pg");
-const bcrypt = require("bcrypt");
+/**
+ * ATENÇÃO: Este arquivo está DEPRECADO!
+ *
+ * A lógica foi refatorada e distribuída em:
+ * - src/config/database.js - Configuração do pool de conexões
+ * - src/repositories/*.js - Operações de banco de dados
+ * - src/services/*.js - Lógica de negócio
+ *
+ * Este arquivo é mantido apenas para referência durante a migração.
+ * NÃO UTILIZE ESTE ARQUIVO EM NOVOS DESENVOLVIMENTOS.
+ */
 
-// Configurações do banco de dados
-const dbConfig = {
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  ssl: {
-    require: true,
-    rejectUnauthorized: false,
-  },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
-};
+// Redirecionamento para a nova estrutura
+console.warn(
+  "⚠️  AVISO: database.js está deprecado. Use os novos módulos em src/"
+);
 
-const pool = new Pool(dbConfig);
+const { pool } = require("./src/config/database");
+const UserRepository = require("./src/repositories/userRepository");
+const PartnerRepository = require("./src/repositories/partnerRepository");
+const FinancialRepository = require("./src/repositories/financialRepository");
 
-pool.on("connect", () => {
-  console.log("🔗 Conectado ao banco PostgreSQL");
-});
-
-pool.on("error", (err) => {
-  console.error("❌ Erro na conexão com o banco:", err);
-  process.exit(-1);
-});
-
-// Classe para gerenciar operações do banco
-class Database {
-  // Método para testar a conexão
+// Exporta compatibilidade legada (para não quebrar código antigo)
+class DatabaseLegacy {
   static async testConnection() {
-    try {
-      const client = await pool.connect();
-      console.log("✅ Teste de conexão bem-sucedido");
-      client.release();
-      return true;
-    } catch (error) {
-      console.error("❌ Erro no teste de conexão:", error);
-      return false;
-    }
+    const { testConnection } = require("./src/config/database");
+    return await testConnection();
   }
 
-  // Método para buscar usuário por email
   static async getUserByEmail(email) {
-    const query = "SELECT * FROM Usuario WHERE email = $1";
-
-    try {
-      const result = await pool.query(query, [email]);
-      return result.rows[0] || null;
-    } catch (error) {
-      console.error("❌ Erro ao buscar usuário:", error);
-      throw error;
-    }
+    const userRepo = new UserRepository();
+    return await userRepo.findByEmail(email);
   }
 
-  // Método para verificar login
   static async verifyLogin(email, password) {
+    const AuthService = require("./src/services/authService");
+    const authService = new AuthService();
     try {
-      // Buscar usuário por email
-      const user = await this.getUserByEmail(email);
-
-      if (!user) {
-        return {
-          success: false,
-          message: "Email não encontrado",
-        };
-      }
-
-      // Verificar senha
-      const isValidPassword = await bcrypt.compare(password, user.senha);
-
-      if (!isValidPassword) {
-        return {
-          success: false,
-          message: "Senha incorreta",
-        };
-      }
-
-      // Login bem-sucedido
+      const result = await authService.login(email, password);
       return {
         success: true,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-        },
+        user: result.user,
       };
     } catch (error) {
-      console.error("❌ Erro na verificação de login:", error);
       return {
         success: false,
-        message: "Erro interno do servidor",
+        message: error.message,
       };
     }
   }
 
-  // Método para criar novo usuário
   static async createUser(name, email, password) {
+    const userRepo = new UserRepository();
     try {
-      // Verificar se email já existe
-      const existingUser = await this.getUserByEmail(email);
-      if (existingUser) {
-        return {
-          success: false,
-          message: "Email já está em uso",
-        };
-      }
-
-      // Hash da senha
-      const saltRounds = 10;
-      const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-      // Inserir usuário
-      const query = `
-        INSERT INTO Usuario (name, email, senha) 
-        VALUES ($1, $2, $3) 
-        RETURNING id, name, email
-      `;
-
-      const result = await pool.query(query, [name, email, hashedPassword]);
-
+      const user = await userRepo.create({ name, email, password });
       return {
         success: true,
-        user: result.rows[0],
+        user,
       };
     } catch (error) {
-      console.error("❌ Erro ao criar usuário:", error);
       return {
         success: false,
-        message: "Erro ao criar usuário",
+        message: error.message,
       };
     }
   }
 
-  // Método para atualizar dados do usuário
   static async updateUser(id, updates) {
+    const userRepo = new UserRepository();
     try {
-      const { name, email, password } = updates;
-      let query = "UPDATE Usuario SET updated_at = CURRENT_TIMESTAMP";
-      const values = [];
-      let paramCount = 0;
-
-      if (name) {
-        paramCount++;
-        query += `, name = $${paramCount}`;
-        values.push(name);
-      }
-
-      if (email) {
-        paramCount++;
-        query += `, email = $${paramCount}`;
-        values.push(email);
-      }
-
-      if (password) {
-        paramCount++;
-        const hashedPassword = await bcrypt.hash(password, 10);
-        query += `, senha = $${paramCount}`;
-        values.push(hashedPassword);
-      }
-
-      paramCount++;
-      query += ` WHERE id = $${paramCount} RETURNING id, name, email`;
-      values.push(id);
-
-      const result = await pool.query(query, values);
-
-      if (result.rows.length === 0) {
-        return {
-          success: false,
-          message: "Usuário não encontrado",
-        };
-      }
-
+      const user = await userRepo.update(id, updates);
       return {
-        success: true,
-        user: result.rows[0],
+        success: !!user,
+        user,
       };
     } catch (error) {
-      console.error("❌ Erro ao atualizar usuário:", error);
       return {
         success: false,
-        message: "Erro ao atualizar usuário",
+        message: error.message,
       };
     }
   }
 
-  // Método para deletar usuário
   static async deleteUser(id) {
+    const userRepo = new UserRepository();
     try {
-      const query = "DELETE FROM Usuario WHERE id = $1 RETURNING id";
-      const result = await pool.query(query, [id]);
-
-      if (result.rows.length === 0) {
-        return {
-          success: false,
-          message: "Usuário não encontrado",
-        };
-      }
-
+      await userRepo.delete(id);
       return {
         success: true,
         message: "Usuário deletado com sucesso",
       };
     } catch (error) {
-      console.error("❌ Erro ao deletar usuário:", error);
       return {
         success: false,
-        message: "Erro ao deletar usuário",
+        message: error.message,
       };
     }
   }
 
-  // Método para listar todos os usuários
   static async getAllUsers() {
+    const userRepo = new UserRepository();
     try {
-      const query =
-        "SELECT id, name, email, created_at FROM Usuario ORDER BY created_at DESC";
-      const result = await pool.query(query);
-
+      const users = await userRepo.findAllUsers();
       return {
         success: true,
-        users: result.rows,
+        users,
       };
     } catch (error) {
-      console.error("❌ Erro ao buscar usuários:", error);
       return {
         success: false,
-        message: "Erro ao buscar usuários",
+        message: error.message,
       };
     }
   }
 
-  // Método para listar todos os parceiros (clifornec)
   static async getAllPartners() {
+    const partnerRepo = new PartnerRepository();
     try {
-      // Nota: Esta query assume que você tem as colunas necessárias. Ajuste se preciso.
-      const query = `
-        SELECT 
-          id, 
-          cgc, 
-          razaosocial, 
-          nomefantasia, 
-          numerocel, 
-          numeroend, 
-          cep, 
-          rua, 
-          bairro,
-          email
-        FROM clifornec 
-        ORDER BY razaosocial ASC
-      `;
-      const result = await pool.query(query);
-
+      const partners = await partnerRepo.findAll();
       return {
         success: true,
-        partners: result.rows,
+        partners,
       };
     } catch (error) {
-      console.error("❌ Erro ao buscar parceiros:", error);
-      return { success: false, message: "Erro ao buscar parceiros" };
+      return {
+        success: false,
+        message: error.message,
+      };
     }
   }
 
   static async getTipopag() {
+    const financialRepo = new FinancialRepository();
     try {
-      const query = `
-      SELECT * FROM tipopag 
-    `;
-      const result = await pool.query(query);
-
+      const records = await financialRepo.getTipoPag();
       return {
         success: true,
-        records: result.rows,
+        records,
       };
     } catch (error) {
-      console.error("❌ Erro ao buscar registros tipo de pagamentos:", error);
       return {
         success: false,
-        message: "Erro ao buscar registros tipo de pagamentos",
+        message: error.message,
       };
     }
   }
 
-  // Método para LISTAR todas as movimentações financeiras (GET)
   static async getAllFinancialRecords() {
+    const financialRepo = new FinancialRepository();
     try {
-      const query = `
-      SELECT 
-        f.id,
-        f.tipo,
-        f.situacao,
-        f.numero,
-        f.valor,
-        f.datavencimento,
-        c.razaosocial AS parceiro_nome 
-      FROM financeiro AS f
-      JOIN clifornec AS c ON f.id_clifornec = c.id
-      ORDER BY f.datavencimento DESC
-    `;
-      const result = await pool.query(query);
-
+      const records = await financialRepo.findAllRecords();
       return {
         success: true,
-        records: result.rows,
+        records,
       };
     } catch (error) {
-      console.error("❌ Erro ao buscar registros financeiros:", error);
       return {
         success: false,
-        message: "Erro ao buscar registros financeiros",
+        message: error.message,
       };
     }
   }
 
-  // Método para CRIAR uma nova movimentação financeira (POST)
   static async postFinancialRecords(data) {
-    const {
-      descricao,
-      idtipopag,
-      datavencimento,
-      valor,
-      tipo,
-      numero,
-      id_clifornec,
-    } = data;
-
+    const financialRepo = new FinancialRepository();
     try {
-      const query = `
-      INSERT INTO financeiro (
-        descricao, idtipopag, datavencimento, valor, situacao, tipo, numero, id_clifornec
-      )
-      VALUES ($1, $2, $3, $4, 'A', $5, $6, $7)
-      RETURNING *;
-    `;
-
-      const values = [
-        descricao,
-        idtipopag,
-        datavencimento,
-        valor,
-        tipo,
-        numero,
-        id_clifornec,
-      ];
-
-      const result = await pool.query(query, values);
-
+      const newRecord = await financialRepo.createRecord(data);
       return {
         success: true,
         message: "Registro financeiro criado com sucesso!",
-        newRecord: result.rows[0],
+        newRecord,
       };
     } catch (error) {
-      console.error("❌ Erro ao criar registro financeiro:", error);
       return {
         success: false,
-        message: "Erro ao criar registro financeiro",
+        message: error.message,
       };
     }
   }
 
-  // Método para ATUALIZAR uma movimentação financeira existente (UPDATE/PUT)
   static async updateFinancialRecords(id, data) {
-    // Lista dos campos que podem ser atualizados
-    const allowedFields = [
-      "descricao",
-      "idtipopag",
-      "datavencimento",
-      "valor",
-      "situacao",
-      "tipo",
-      "numero",
-      "id_clifornec",
-    ];
-
-    const setClauses = [];
-    const values = [];
-    let paramIndex = 1;
-
-    // Monta a query dinamicamente com base nos dados recebidos
-    allowedFields.forEach((field) => {
-      if (data[field] !== undefined) {
-        setClauses.push(`${field} = $${paramIndex++}`);
-        values.push(data[field]);
-      }
-    });
-
-    // Se nenhum campo válido foi enviado, retorna um erro
-    if (setClauses.length === 0) {
-      return {
-        success: false,
-        message: "Nenhum campo válido para atualizar foi fornecido.",
-      };
-    }
-
-    // Adiciona o ID ao final da lista de valores para a cláusula WHERE
-    values.push(id);
-
+    const financialRepo = new FinancialRepository();
     try {
-      // Monta a query final
-      const query = `
-      UPDATE financeiro
-      SET ${setClauses.join(", ")}
-      WHERE id = $${paramIndex}
-      RETURNING *; -- Retorna o registro atualizado
-    `;
-
-      const result = await pool.query(query, values);
-
-      // Verifica se algum registro foi realmente atualizado
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          message: "Registro financeiro não encontrado para atualização.",
-        };
-      }
-
+      const updatedRecord = await financialRepo.updateRecord(id, data);
       return {
         success: true,
         message: "Registro financeiro atualizado com sucesso!",
-        updatedRecord: result.rows[0],
+        updatedRecord,
       };
     } catch (error) {
-      console.error("❌ Erro ao atualizar registro financeiro:", error);
       return {
         success: false,
-        message: "Erro ao atualizar registro financeiro",
+        message: error.message,
       };
     }
   }
 
-  // Método para DELETAR uma movimentação financeira (DELETE)
   static async deleteFinancialRecords(id) {
+    const financialRepo = new FinancialRepository();
     try {
-      // Query para DELETAR um registro específico pelo ID
-      const query = `
-      DELETE FROM financeiro
-      WHERE id = $1;
-    `;
-
-      const result = await pool.query(query, [id]);
-
-      // Verifica se a linha foi realmente deletada. Se rowCount for 0, o ID não existia.
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          message: "Registro financeiro não encontrado para exclusão.",
-        };
-      }
-
+      await financialRepo.deleteRecord(id);
       return {
         success: true,
         message: "Registro financeiro excluído com sucesso!",
       };
     } catch (error) {
-      console.error("❌ Erro ao deletar registro financeiro:", error);
       return {
         success: false,
-        message: "Erro ao deletar registro financeiro",
+        message: error.message,
       };
     }
   }
 
-  // Método para buscar cidade estado
   static async getCidadeEstado() {
+    const partnerRepo = new PartnerRepository();
     try {
-      const query = "SELECT * FROM cidadeestado";
-      const result = await pool.query(query);
-
+      const records = await partnerRepo.getCidadeEstado();
       return {
         success: true,
-        records: result.rows,
+        records,
       };
     } catch (error) {
-      console.error("❌ Erro ao buscar registros Cidade Estado:", error);
       return {
         success: false,
-        message: "Erro ao buscar registros Cidade Estado",
+        message: error.message,
       };
     }
   }
 
   static async createPartner(data) {
+    const partnerRepo = new PartnerRepository();
     try {
-      const query = `
-        INSERT INTO clifornec 
-          (cgc, razaosocial, nomefantasia, numerocel, numeroend, cep, rua, bairro, idcidadeestado, email)
-        VALUES 
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *;
-      `;
-
-      const values = [
-        data.cgc,
-        data.razaoSocial,
-        data.nomeFantasia,
-        data.celular.replace(/\D/g, ""),
-        data.numero,
-        data.cep,
-        data.rua,
-        data.bairro,
-        data.cidadeEstado,
-        data.email,
-      ];
-
-      const result = await pool.query(query, values);
-      return { success: true, partner: result.rows[0] };
+      const partner = await partnerRepo.createPartner(data);
+      return {
+        success: true,
+        partner,
+      };
     } catch (error) {
-      console.error("❌ Erro ao criar parceiro:", error);
-      return { success: false, message: "Erro ao criar parceiro no banco." };
+      return {
+        success: false,
+        message: error.message,
+      };
     }
   }
 
-  // Método para ATUALIZAR um parceiro existente
   static async updatePartner(id, data) {
+    const partnerRepo = new PartnerRepository();
     try {
-      const query = `
-        UPDATE clifornec SET
-          cgc = $1,
-          razaosocial = $2,
-          nomefantasia = $3,
-          numerocel = $4,
-          numeroend = $5,
-          cep = $6,
-          rua = $7,
-          bairro = $8,
-          idcidadeestado = $9, 
-          email = $10
-        WHERE id = $11
-        RETURNING *;
-      `;
-      const values = [
-        data.cgc,
-        data.razaoSocial,
-        data.nomeFantasia,
-        data.celular.replace(/\D/g, ""),
-        data.numero,
-        data.cep,
-        data.rua,
-        data.bairro,
-        data.cidadeEstado,
-        data.email,
-        id,
-      ];
-
-      const result = await pool.query(query, values);
-      return { success: true, partner: result.rows[0] };
+      const partner = await partnerRepo.updatePartner(id, data);
+      return {
+        success: true,
+        partner,
+      };
     } catch (error) {
-      console.error("❌ Erro ao atualizar parceiro:", error);
       return {
         success: false,
-        message: "Erro ao atualizar parceiro no banco.",
+        message: error.message,
       };
     }
   }
 
   static async getPartner(cgc) {
+    const partnerRepo = new PartnerRepository();
     try {
-      const query = `
-      SELECT c.*, ci.nomecidade, ci.nomeestado
-      FROM clifornec c
-      INNER JOIN cidadeestado ci ON ci.id = c.idcidadeestado
-      WHERE c.cgc = $1
-    `;
-      const values = [cgc];
-
-      const result = await pool.query(query, values);
-      return { success: true, partner: result.rows[0] };
+      const partner = await partnerRepo.findByCgc(cgc);
+      return {
+        success: true,
+        partner,
+      };
     } catch (error) {
-      console.error("❌ Erro ao buscar parceiro:", error);
       return {
         success: false,
-        message: "Erro ao buscar parceiro no banco.",
+        message: error.message,
       };
     }
   }
 
   static async deletePartner(id) {
+    const partnerRepo = new PartnerRepository();
     try {
-      const checkQuery =
-        "SELECT 1 FROM financeiro WHERE id_clifornec = $1 LIMIT 1";
-      const checkResult = await pool.query(checkQuery, [id]);
-
-      if (checkResult.rowCount > 0) {
-        return {
-          success: false,
-          message:
-            "Este parceiro não pode ser excluído pois possui movimentações financeiras associadas.",
-        };
-      }
-
-      const deleteQuery = "DELETE FROM clifornec WHERE id = $1 RETURNING id";
-      const result = await pool.query(deleteQuery, [id]);
-
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          message: "Parceiro não encontrado para exclusão.",
-        };
-      }
-
+      await partnerRepo.deletePartner(id);
       return {
         success: true,
         message: "Parceiro excluído com sucesso.",
       };
     } catch (error) {
-      console.error("❌ Erro ao deletar parceiro:", error);
       return {
         success: false,
-        message: "Erro ao deletar parceiro no banco.",
+        message: error.message,
       };
     }
   }
 
-  // Método para fechar todas as conexões
   static async closeConnections() {
     try {
       await pool.end();
@@ -627,17 +301,7 @@ class Database {
   }
 }
 
-// Inicialização automática
-(async () => {
-  try {
-    await Database.testConnection();
-    console.log("🚀 Database inicializado com sucesso");
-  } catch (error) {
-    console.error("❌ Erro na inicialização do database:", error);
-  }
-})();
-
 module.exports = {
-  Database,
+  Database: DatabaseLegacy,
   pool,
 };
