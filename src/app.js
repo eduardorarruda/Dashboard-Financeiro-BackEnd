@@ -12,15 +12,7 @@ const routes = require("./routes");
 const app = express();
 
 // Middlewares globais
-app.use(
-  cors({
-    origin:
-      config.nodeEnv === "production"
-        ? ["https://yourdomain.com"]
-        : ["http://localhost:3000", "http://localhost:3001"],
-    credentials: true,
-  })
-);
+app.use(cors());
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
