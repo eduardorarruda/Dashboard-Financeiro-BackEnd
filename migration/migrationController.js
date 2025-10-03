@@ -79,6 +79,18 @@ class MigrationController {
         results.tipoPag = { success: false, error: error.message };
       }
 
+      try {
+        console.log("Iniciando migração do fianceiro...");
+        results.financeiro = await this.migrateFinanceiroOnly();
+      } catch (error) {
+        console.error("Erro na migração financeiro:", error);
+        failedMigrations.push({
+          migration: "financeiro",
+          error: error.message,
+        });
+        results.financeiro = { success: false, error: error.message };
+      }
+
       if (failedMigrations.length > 0) {
         console.error("Algumas migrações falharam:", failedMigrations);
         return {
@@ -253,6 +265,28 @@ class MigrationController {
       };
     } catch (error) {
       console.error("Erro na migração de tipo de pagamento:", error);
+      return {
+        success: false,
+        error: error.message,
+        stack: error.stack,
+      };
+    }
+  }
+
+  static async migrateFinanceiroOnly() {
+    console.log("Controlador: migrando apenas Financeiro...");
+    try {
+      this._validateMigrationMethod("migrateFinanceiro");
+
+      await UserModel.migrateFinanceiro(firebirdPool, postgresPool);
+      console.log("Migração do financeiro concluída");
+
+      return {
+        success: true,
+        data: { message: "Financeiro migrados com sucesso" },
+      };
+    } catch (error) {
+      console.error("Erro na migração do Financeiro:", error);
       return {
         success: false,
         error: error.message,

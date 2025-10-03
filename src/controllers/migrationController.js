@@ -33,6 +33,7 @@ class MigrationController {
         "centroCusto",
         "planoContas",
         "tipoPag",
+        "financeiro",
       ];
 
       if (!validTypes.includes(migrationType)) {
@@ -67,6 +68,9 @@ class MigrationController {
         case "tipoPag":
           result = await this.migrationService.migrateTipoPag();
           break;
+        case "financeiro":
+          result = await this.migrationService.migrateFinanceiro();
+          break;
       }
 
       console.log(
@@ -75,16 +79,46 @@ class MigrationController {
       );
 
       if (result.success) {
+        // CORREÇÃO: Melhorar formatação da resposta
+        const responseData = {
+          ...result.data,
+          migrationType,
+          timestamp: new Date().toISOString(),
+        };
+
+        // Para migração completa, adicionar resumo
+        if (migrationType === "complete" && result.summary) {
+          responseData.summary = result.summary;
+        }
+
+        // Se houver falhas parciais na migração completa
+        if (result.failedMigrations && result.failedMigrations.length > 0) {
+          return ApiResponse.error(
+            res,
+            "Migração completa com falhas parciais",
+            207, // Multi-Status
+            {
+              ...responseData,
+              failedMigrations: result.failedMigrations,
+            }
+          );
+        }
+
         return ApiResponse.success(
           res,
-          result.data,
-          `Migração ${migrationType} executada com sucesso`
+          responseData,
+          result.message || `Migração ${migrationType} executada com sucesso`
         );
       } else {
         return ApiResponse.error(
           res,
-          result.message || "Erro na migração",
-          500
+          result.error || result.message || "Erro na migração",
+          500,
+          {
+            migrationType,
+            details: result.data || null,
+            failedMigrations: result.failedMigrations || null,
+          }
         );
       }
     } catch (error) {
@@ -104,12 +138,23 @@ class MigrationController {
 
   async getMigrationStats(req, res, next) {
     try {
-      // Implementar estatísticas se necessário
-      return ApiResponse.success(
-        res,
-        { message: "Estatísticas de migração" },
-        "Método em desenvolvimento"
-      );
+      // TODO: Implementar busca real de estatísticas
+      const stats = {
+        lastMigration: null,
+        totalRecordsMigrated: 0,
+        migrations: {
+          users: { total: 0, lastRun: null },
+          cidadeEstado: { total: 0, lastRun: null },
+          cliFornec: { total: 0, lastRun: null },
+          centroCusto: { total: 0, lastRun: null },
+          planoContas: { total: 0, lastRun: null },
+          tipoPag: { total: 0, lastRun: null },
+          financeiro: { total: 0, lastRun: null },
+        },
+        message: "Método em desenvolvimento - estatísticas mock",
+      };
+
+      return ApiResponse.success(res, stats, "Estatísticas de migração");
     } catch (error) {
       next(error);
     }
