@@ -66,6 +66,3 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Promise rejeitada não tratada:", reason);
   process.exit(1);
 });
-
-// A exportação do server pode ser removida se não for usada para testes
-// module.exports = server;
