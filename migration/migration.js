@@ -1,12 +1,11 @@
-// migration.js - Versão Melhorada
 const { decryptPassword } = require("./utils/criptografiaUser");
 const bcrypt = require("bcrypt");
 
 // Configurações de performance
-const BATCH_SIZE = 1000;
+const BATCH_SIZE = 5000;
 const CONCURRENT_OPERATIONS = 5;
 const HASH_ROUNDS = 10;
-const QUERY_TIMEOUT = 30000; // 30 segundos
+const QUERY_TIMEOUT = 120000;
 
 // Função auxiliar otimizada para Firebird com pool de conexões
 function executeFirebirdQueryOptimized(firebirdPool, query) {
@@ -136,7 +135,6 @@ async function insertIndividualPostgres(postgresPool, table, columns, values) {
       await postgresPool.query(query, value);
       success++;
     } catch (error) {
-      // Ignora erros de duplicata silenciosamente
       if (
         !error.message.includes("duplicate key") &&
         !error.message.includes("already exists")
@@ -597,15 +595,10 @@ async function migrateTipoPag(firebirdPool, postgresPool) {
       `ℹ️ Encontrados ${tiposPagamento.length} Tipo Pagamento para migrar.`
     );
 
-    // Filtrar registros válidos e mapear corretamente
     const processedData = tiposPagamento
       .filter((tp) => tp.CODICOB != null && tp.DESCCOB != null)
       .map((tp) => {
-        console.log(`📝 Processando: ID=${tp.CODICOB}, Nome=${tp.DESCCOB}`);
-        return [
-          parseInt(tp.CODICOB), // Garantir que é número
-          tp.DESCCOB.toString().trim(), // Garantir que é string
-        ];
+        return [parseInt(tp.CODICOB), tp.DESCCOB.toString().trim()];
       });
 
     console.log(`📊 ${processedData.length} registros válidos processados`);
@@ -636,6 +629,300 @@ async function migrateTipoPag(firebirdPool, postgresPool) {
   }
 }
 
+async function migrateFinanceiro(firebirdPool, postgresPool) {
+  console.log(
+    "🚀 Iniciando migração OTIMIZADA de Financeiro (queries paginadas)..."
+  );
+
+  try {
+    const startTime = Date.now();
+
+    // ETAPA 1: Pré-buscar dados do PostgreSQL
+    const [parceirosPgResult, tiposPagPgResult] = await Promise.all([
+      postgresPool.query("SELECT id, cgc FROM clifornec"),
+      postgresPool.query("SELECT id FROM tipopag"),
+    ]);
+
+    const cgcToIdMap = new Map();
+    for (const p of parceirosPgResult.rows) {
+      const normalizedCgc = p.cgc.toString().trim().toUpperCase();
+      cgcToIdMap.set(normalizedCgc, p.id);
+    }
+
+    const validTipoPagIds = new Set(tiposPagPgResult.rows.map((tp) => tp.id));
+
+    console.log(
+      `🗺️ Mapeamento criado: ${cgcToIdMap.size} parceiros, ${validTipoPagIds.size} tipos de pagamento`
+    );
+
+    // ETAPA 2: BUSCAR EM LOTES MENORES (reduz carga no Firebird)
+    const queryStart = Date.now();
+    const PAGE_SIZE = 5000; // Buscar 5000 registros por vez
+    let allFinanceiros = [];
+    let page = 0;
+    let hasMore = true;
+
+    const getQueryPagar = (offset, limit) => `
+      SELECT FIRST ${limit} SKIP ${offset}
+        f.cgcfornec AS CGC,
+        d.NUMEDOC AS NUMERO,
+        'P' AS TIPO,
+        CASE p.SITUPAR
+          WHEN 'A' THEN 'A'
+          WHEN 'Q' THEN 'P'
+          ELSE 'A'
+        END AS SITUACAO,
+        p.VLORPAR AS VALOR,
+        p.VENCPAR AS DATAVENCIMENTO,
+        d.tcobdoc AS IDTIPOPAG,
+        d.OBSERV AS DESCRICAO
+      FROM docfina d
+      INNER JOIN parcela p ON p.sequdoc = d.sequdoc
+      INNER JOIN fornecedor f ON f.codfornec = d.fclidoc
+      WHERE d.tipodoc = 1
+        AND f.cgcfornec IS NOT NULL
+        AND p.VLORPAR IS NOT NULL
+        AND p.VENCPAR IS NOT NULL
+        AND p.SITUPAR IN ('A', 'Q')
+    `;
+
+    const getQueryReceber = (offset, limit) => `
+      SELECT FIRST ${limit} SKIP ${offset}
+        c.cgccli AS CGC,
+        d.NUMEDOC AS NUMERO,
+        'R' AS TIPO,
+        CASE p.SITUPAR
+          WHEN 'A' THEN 'A'
+          WHEN 'Q' THEN 'P'
+          ELSE 'A'
+        END AS SITUACAO,
+        p.VLORPAR AS VALOR,
+        p.VENCPAR AS DATAVENCIMENTO,
+        d.tcobdoc AS IDTIPOPAG,
+        d.OBSERV AS DESCRICAO
+      FROM docfina d
+      INNER JOIN parcela p ON p.sequdoc = d.sequdoc
+      INNER JOIN cliente c ON c.codcli = d.fclidoc
+      WHERE d.tipodoc = 2
+        AND c.cgccli IS NOT NULL
+        AND p.VLORPAR IS NOT NULL
+        AND p.VENCPAR IS NOT NULL
+        AND p.SITUPAR IN ('A', 'Q')
+    `;
+
+    console.log("📊 Buscando dados em páginas de 5000 registros...");
+
+    // Buscar PAGAR em lotes
+    console.log("💰 Buscando documentos A PAGAR...");
+    page = 0;
+    hasMore = true;
+    let totalPagar = 0;
+
+    while (hasMore) {
+      const offset = page * PAGE_SIZE;
+      const queryPagar = getQueryPagar(offset, PAGE_SIZE);
+
+      const pageData = await executeFirebirdQueryOptimized(
+        firebirdPool,
+        queryPagar
+      );
+
+      if (pageData.length > 0) {
+        allFinanceiros.push(...pageData);
+        totalPagar += pageData.length;
+        console.log(
+          `  📄 Página ${page + 1}: ${
+            pageData.length
+          } registros (total: ${totalPagar})`
+        );
+        page++;
+
+        // Se retornou menos que PAGE_SIZE, não há mais dados
+        if (pageData.length < PAGE_SIZE) {
+          hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
+
+      // Pequena pausa para não sobrecarregar
+      if (hasMore) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    // Buscar RECEBER em lotes
+    console.log("💵 Buscando documentos A RECEBER...");
+    page = 0;
+    hasMore = true;
+    let totalReceber = 0;
+
+    while (hasMore) {
+      const offset = page * PAGE_SIZE;
+      const queryReceber = getQueryReceber(offset, PAGE_SIZE);
+
+      const pageData = await executeFirebirdQueryOptimized(
+        firebirdPool,
+        queryReceber
+      );
+
+      if (pageData.length > 0) {
+        allFinanceiros.push(...pageData);
+        totalReceber += pageData.length;
+        console.log(
+          `  📄 Página ${page + 1}: ${
+            pageData.length
+          } registros (total: ${totalReceber})`
+        );
+        page++;
+
+        if (pageData.length < PAGE_SIZE) {
+          hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
+
+      if (hasMore) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    console.log(
+      `📊 Busca concluída em ${
+        Date.now() - queryStart
+      }ms: ${totalPagar} a pagar + ${totalReceber} a receber = ${
+        allFinanceiros.length
+      } total`
+    );
+
+    if (allFinanceiros.length === 0) {
+      console.log("🟡 Nenhum registro financeiro encontrado.");
+      return { success: 0, errors: 0 };
+    }
+
+    // ETAPA 3: Processamento PARALELO
+    const processingStart = Date.now();
+    const PROCESSING_CHUNK_SIZE = 2000;
+    const processedData = [];
+    let ignoredCount = 0;
+
+    const processRecord = (fb) => {
+      const cgcRaw = fb.CGC;
+      if (!cgcRaw) return null;
+
+      const normalizedCgc = cgcRaw.toString().trim().toUpperCase();
+      const idClifornec = cgcToIdMap.get(normalizedCgc);
+      if (!idClifornec) return null;
+
+      let idTipoPag = fb.IDTIPOPAG;
+      if (idTipoPag != null && !validTipoPagIds.has(idTipoPag)) {
+        idTipoPag = null;
+      }
+
+      let dataVencimento = fb.DATAVENCIMENTO;
+      if (dataVencimento instanceof Date) {
+        dataVencimento = dataVencimento.toISOString().split("T")[0];
+      }
+
+      return [
+        idClifornec,
+        fb.NUMERO ? fb.NUMERO.toString().trim() : null,
+        fb.TIPO,
+        fb.SITUACAO,
+        parseFloat(fb.VALOR) || 0,
+        dataVencimento,
+        idTipoPag,
+        fb.DESCRICAO ? fb.DESCRICAO.toString().trim() : null,
+      ];
+    };
+
+    // Processar em chunks paralelos
+    for (let i = 0; i < allFinanceiros.length; i += PROCESSING_CHUNK_SIZE) {
+      const chunk = allFinanceiros.slice(i, i + PROCESSING_CHUNK_SIZE);
+
+      const chunkResults = await Promise.all(
+        chunk.map(async (fb) => processRecord(fb))
+      );
+
+      for (const result of chunkResults) {
+        if (result === null) {
+          ignoredCount++;
+        } else {
+          processedData.push(result);
+        }
+      }
+
+      if (
+        (i + PROCESSING_CHUNK_SIZE) % 10000 === 0 ||
+        i + PROCESSING_CHUNK_SIZE >= allFinanceiros.length
+      ) {
+        console.log(
+          `⚙️ Processados ${Math.min(
+            i + PROCESSING_CHUNK_SIZE,
+            allFinanceiros.length
+          )}/${allFinanceiros.length} registros...`
+        );
+      }
+    }
+
+    console.log(
+      `✅ Processamento concluído em ${Date.now() - processingStart}ms: ${
+        processedData.length
+      } válidos, ${ignoredCount} ignorados`
+    );
+
+    if (processedData.length === 0) {
+      console.log("🟡 Nenhum registro válido para inserir.");
+      return { success: 0, errors: ignoredCount };
+    }
+
+    // ETAPA 4: Inserção em lotes
+    const insertStart = Date.now();
+    const batchProcessor = async (batch) => {
+      const result = await insertBatchPostgres(
+        postgresPool,
+        "financeiro",
+        [
+          "id_clifornec",
+          "numero",
+          "tipo",
+          "situacao",
+          "valor",
+          "datavencimento",
+          "idtipopag",
+          "descricao",
+        ],
+        batch
+      );
+      return [result];
+    };
+
+    const results = await processBatch(
+      processedData,
+      batchProcessor,
+      BATCH_SIZE
+    );
+
+    const totalSuccess = results.reduce((sum, r) => sum + r.success, 0);
+    const totalErrors = results.reduce((sum, r) => sum + r.errors, 0);
+
+    console.log(`✅ Inserção concluída em ${Date.now() - insertStart}ms`);
+    console.log(
+      `🎉 Migração TOTAL: ${
+        Date.now() - startTime
+      }ms - ${totalSuccess} migrados, ${
+        totalErrors + ignoredCount
+      } erros/ignorados`
+    );
+
+    return { success: totalSuccess, errors: totalErrors + ignoredCount };
+  } catch (error) {
+    console.error("❌ Erro durante migração de Financeiro:", error);
+    throw error;
+  }
+}
+
 module.exports = {
   migrateUsers,
   migrateCidadeEstado,
@@ -643,6 +930,7 @@ module.exports = {
   migrateCentroCusto,
   migratePlanoContas,
   migrateTipoPag,
+  migrateFinanceiro,
   BATCH_SIZE,
   CONCURRENT_OPERATIONS,
 };

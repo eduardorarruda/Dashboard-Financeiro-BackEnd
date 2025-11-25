@@ -15,25 +15,41 @@ const dbConfigFDB = {
   pageSize: 4096,
 };
 
-// Configuração do banco PostgreSQL
+// Configuração do banco PostgreSQL - AIVEN CLOUD
 const dbConfigPG = {
   host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
+  port: parseInt(process.env.DB_PORT) || 5432,
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
+  // SSL obrigatório para Aiven Cloud
   ssl: {
-    require: true,
     rejectUnauthorized: false,
   },
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  // CRÍTICO: Aiven precisa de timeout maior (conexão na nuvem)
+  connectionTimeoutMillis: 15000, // 15 segundos
+  statement_timeout: 30000,
+  // Adicionar configurações para estabilidade
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 };
 
-const firebirdPool = Firebird.pool(5, dbConfigFDB);
+console.log("📋 Configuração PostgreSQL (Aiven Cloud):");
+console.log(`   Host: ${dbConfigPG.host}`);
+console.log(`   Port: ${dbConfigPG.port}`);
+console.log(`   Database: ${dbConfigPG.database}`);
+console.log(`   User: ${dbConfigPG.user}`);
+console.log(`   SSL: Obrigatório (Aiven)`);
 
+const firebirdPool = Firebird.pool(5, dbConfigFDB);
 const postgresPool = new Pool(dbConfigPG);
+
+// Handler de erros do pool
+postgresPool.on("error", (err) => {
+  console.error("❌ Erro inesperado no pool PostgreSQL:", err.message);
+});
 
 // Classe para gerenciar operações do banco
 class Database {
@@ -54,13 +70,37 @@ class Database {
 
   // Método para testar a conexão com PostgreSQL
   static async testPostgresConnection() {
+    let client;
     try {
-      const client = await postgresPool.connect();
-      console.log("✅ Teste de conexão com PostgreSQL bem-sucedido");
+      console.log("🔄 Conectando ao PostgreSQL (Aiven Cloud)...");
+      client = await postgresPool.connect();
+
+      // Testar com query simples
+      const result = await client.query(
+        "SELECT NOW() as now, version() as version"
+      );
+      console.log(`✅ PostgreSQL conectado! Timestamp: ${result.rows[0].now}`);
+
       client.release();
       return true;
     } catch (error) {
-      console.error("❌ Erro no teste de conexão com PostgreSQL:", error);
+      if (client) client.release();
+
+      console.error("❌ Erro ao conectar PostgreSQL:", error.message);
+
+      // Mensagens de ajuda específicas
+      if (error.message.includes("timeout")) {
+        console.error("💡 Possíveis causas:");
+        console.error("   - Verifique se o IP está na whitelist do Aiven");
+        console.error("   - Firewall local bloqueando porta 18058");
+        console.error("   - Conexão de internet instável");
+      } else if (
+        error.message.includes("password") ||
+        error.message.includes("authentication")
+      ) {
+        console.error("💡 Verifique as credenciais no arquivo .env");
+      }
+
       throw error;
     }
   }
@@ -73,7 +113,7 @@ class Database {
       console.log("✅ Todas as conexões testadas com sucesso");
       return true;
     } catch (error) {
-      console.error("❌ Erro ao testar conexões:", error);
+      console.error("❌ Erro ao testar conexões:", error.message);
       throw error;
     }
   }
@@ -81,7 +121,6 @@ class Database {
   // Método para fechar todas as conexões
   static async closeConnections() {
     try {
-      await firebirdPool.end();
       await postgresPool.end();
       console.log("🔒 Conexões com os bancos encerradas");
     } catch (error) {
@@ -100,13 +139,14 @@ class Database {
   }
 }
 
-// Inicialização automática
+// Inicialização automática (não bloqueia o servidor se falhar)
 (async () => {
   try {
     await Database.testConnections();
     console.log("🚀 Database inicializado com sucesso");
   } catch (error) {
-    console.error("❌ Erro na inicialização do database:", error);
+    console.error("❌ Erro na inicialização do database:", error.message);
+    console.warn("⚠️  Servidor continuará rodando, mas migrações podem falhar");
   }
 })();
 
