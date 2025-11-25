@@ -1,6 +1,7 @@
 const express = require("express");
 const MigrationController = require("../controllers/migrationController");
 const config = require("../config/env");
+const logsRoutes = require("./logsRoutes");
 
 const router = express.Router();
 const migrationController = new MigrationController();
@@ -34,5 +35,8 @@ router.get(
   "/stats",
   migrationController.getMigrationStats.bind(migrationController)
 );
+
+// Rota para streaming de logs
+router.use("/", logsRoutes);
 
 module.exports = router;

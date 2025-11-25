@@ -316,6 +316,15 @@ async function migrateCliFornec(firebirdPool, postgresPool) {
   console.log("🚀 Iniciando migração OTIMIZADA de Clientes/Fornecedores...");
 
   try {
+    const validCidadesResult = await postgresPool.query(
+      "SELECT id FROM cidadeestado"
+    );
+    const validCidadeIds = new Set(validCidadesResult.rows.map((r) => r.id));
+
+    console.log(
+      `🗺️ Cidades/Estados válidas no PostgreSQL: ${validCidadeIds.size}`
+    );
+
     const fdbQuery = `
       SELECT 
           X.CGC,
@@ -388,18 +397,43 @@ async function migrateCliFornec(firebirdPool, postgresPool) {
       `ℹ️ ${uniqueRecords.length} registros únicos após remoção de duplicatas.`
     );
 
-    const processedData = uniqueRecords.map((record) => [
-      record.CGC.toString().trim(),
-      record.RAZAOSOCIAL ? record.RAZAOSOCIAL.toString().trim() : null,
-      record.NOMEFANTASIA ? record.NOMEFANTASIA.toString().trim() : null,
-      record.NUMEROEND ? record.NUMEROEND.toString().trim() : null,
-      record.EMAIL ? record.EMAIL.toString().trim() : null,
-      record.CEP ? record.CEP.toString().trim() : null,
-      record.RUA ? record.RUA.toString().trim() : null,
-      record.BAIRRO ? record.BAIRRO.toString().trim() : null,
-      record.IDCIDADEESTADO || null,
-      record.NUMEROCEL ? record.NUMEROCEL.toString().trim() : null,
-    ]);
+    let skippedInvalidCidade = 0;
+    const processedData = uniqueRecords
+      .map((record) => {
+        const idCidade = record.IDCIDADEESTADO;
+
+        // Se há ID de cidade, validar se existe
+        if (idCidade != null && !validCidadeIds.has(idCidade)) {
+          console.warn(
+            `⚠️ Ignorando cliente/fornecedor com cidade inválida: ${record.CGC} (cidade: ${idCidade})`
+          );
+          skippedInvalidCidade++;
+          return null;
+        }
+
+        return [
+          record.CGC.toString().trim(),
+          record.RAZAOSOCIAL ? record.RAZAOSOCIAL.toString().trim() : null,
+          record.NOMEFANTASIA ? record.NOMEFANTASIA.toString().trim() : null,
+          record.NUMEROEND ? record.NUMEROEND.toString().trim() : null,
+          record.EMAIL ? record.EMAIL.toString().trim() : null,
+          record.CEP ? record.CEP.toString().trim() : null,
+          record.RUA ? record.RUA.toString().trim() : null,
+          record.BAIRRO ? record.BAIRRO.toString().trim() : null,
+          idCidade || null,
+          record.NUMEROCEL ? record.NUMEROCEL.toString().trim() : null,
+        ];
+      })
+      .filter((item) => item !== null);
+
+    console.log(
+      `ℹ️ ${processedData.length} registros válidos após validação de cidades (${skippedInvalidCidade} ignorados)`
+    );
+
+    if (processedData.length === 0) {
+      console.log("🟡 Nenhum registro válido para inserir.");
+      return { success: 0, errors: uniqueRecords.length };
+    }
 
     const batchProcessor = async (batch) => {
       const result = await insertBatchPostgres(
@@ -447,7 +481,10 @@ async function migrateCliFornec(firebirdPool, postgresPool) {
     console.log(
       `✅ Migração de clientes/fornecedores concluída: ${totalSuccess} migrados, ${totalErrors} erros`
     );
-    return { success: totalSuccess, errors: totalErrors };
+    return {
+      success: totalSuccess,
+      errors: totalErrors + skippedInvalidCidade,
+    };
   } catch (error) {
     console.error(
       "❌ Erro durante migração otimizada de clientes/fornecedores:",
