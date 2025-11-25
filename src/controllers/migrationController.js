@@ -1,6 +1,7 @@
 const MigrationService = require("../services/migrationService");
 const ApiResponse = require("../utils/responses");
 const config = require("../config/env");
+const logService = require("../services/logService");
 
 class MigrationController {
   constructor() {
@@ -42,6 +43,11 @@ class MigrationController {
         ]);
       }
 
+      // Iniciar captura de logs
+      const service = logService.getInstance();
+      service.clearLogs();
+      service.startCapturing();
+
       console.log(`🚀 Iniciando migração do tipo: ${migrationType}`);
 
       let result;
@@ -78,12 +84,18 @@ class MigrationController {
         result.success ? "SUCESSO" : "ERRO"
       );
 
+      // Parar captura de logs
+      service.stopCapturing();
+
+      // Obter todos os logs capturados durante a migração
+      const capturedLogs = service.getAllLogs();
+
       if (result.success) {
-        // CORREÇÃO: Melhorar formatação da resposta
         const responseData = {
           ...result.data,
           migrationType,
           timestamp: new Date().toISOString(),
+          logs: capturedLogs, // Incluir logs capturados
         };
 
         // Para migração completa, adicionar resumo
@@ -100,6 +112,7 @@ class MigrationController {
             {
               ...responseData,
               failedMigrations: result.failedMigrations,
+              logs: capturedLogs,
             }
           );
         }
@@ -118,11 +131,17 @@ class MigrationController {
             migrationType,
             details: result.data || null,
             failedMigrations: result.failedMigrations || null,
+            logs: capturedLogs,
           }
         );
       }
     } catch (error) {
       console.error("❌ Erro na migração:", error);
+
+      // Parar captura de logs em caso de erro
+      const service = logService.getInstance();
+      service.stopCapturing();
+
       next(error);
     }
   }
