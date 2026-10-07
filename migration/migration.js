@@ -1,4 +1,18 @@
-const { decryptPassword } = require("./utils/criptografiaUser");
+// O decodificador das senhas do sistema legado não faz parte deste repositório: ele
+// mostraria como ler as senhas daquele sistema. Para migrar as senhas, aponte a variável
+// LEGACY_DECRYPT_MODULE para um módulo seu (fora do repositório) que exporte
+// decryptPassword(senhaCifrada). Sem ele, os usuários são migrados e precisam redefinir a senha.
+function carregarDecodificador() {
+  const caminho = process.env.LEGACY_DECRYPT_MODULE;
+  if (!caminho) return null;
+  try {
+    return require(require("path").resolve(caminho)).decryptPassword ?? null;
+  } catch (error) {
+    console.warn("⚠️ Não consegui carregar LEGACY_DECRYPT_MODULE:", error.message);
+    return null;
+  }
+}
+const decryptPassword = carregarDecodificador();
 const bcrypt = require("bcrypt");
 
 // Configurações de performance
